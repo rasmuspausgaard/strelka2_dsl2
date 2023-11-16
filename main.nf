@@ -1,113 +1,67 @@
 #!/usr/bin/env nextflow
-nextflow.enable.dsl = 2
+nextflow.enable.dsl=2
 
-date = new Date().format('yyMMdd')
-user = "$USER"
-runID = "${date}.${user}"
-
-// input variables
-params.normalCram           =null 
-params.normalCrai           =null
-params.tumorCram            =null 
-params.tumorCrai            =null
-
-// Genome variables
-params.hg38v1               =null  // primary hg38 full, original hg38 assembly, no decoys, etc.
-params.hg38v2               =null  // UCSC NGS set
-params.hg38v3               =null  // DEFAULT: NGC version, masked regions. 
-
-// Global variables
-launchDir                   = workflow.launchDir
-syspath                     = "/data/shared" // Adjust this as necessary for your environment
-simgpath                    = "/data/shared/programmer/simg"
-params.outdir               ="${launchDir.baseName}.NF_Strelkatest_singularity"
-params.runDir               ="${launchDir.baseName}"
+params.filesPath = '' // Define a parameter for the directory containing the files
+params.genome_fasta = '/data/shared/genomes/hg38/GRCh38/GRCh38/GRCh38.primary.fa'
+params.runDir = "${launchDir.baseName}"
 
 
+process strelka2_singularity {
+    // Specify tags, labels, and other process settings as needed
 
-
-// standard server and switching 
-params.server               ="lnx01"
-
-switch (params.server) {
-    case 'lnx01':
-        modules_dir="/home/mmaj/scripts_lnx01/nextflow_lnx01/dsl2/modules";
-        subworkflow_dir="/home/mmaj/scripts_lnx01/nextflow_lnx01/dsl2/subworkflows";
-    break;
-    case 'kga01':
-        modules_dir="/home/mmaj/LNX01_mmaj/scripts_lnx01/nextflow_lnx01/dsl2/modules";
-        subworkflow_dir="/home/mmaj/LNX01_mmaj/scripts_lnx01/nextflow_lnx01/dsl2/subworkflows";
-    break;
-}
-
-
-// standard genome and switching 
-params.genome               ="hg38"
-
-switch (params.genome) {
-    case 'hg19':
-        modules_dir="/home/mmaj/scripts_lnx01/nextflow_lnx01/dsl2/modules";
-        subworkflow_dir="/home/mmaj/scripts_lnx01/nextflow_lnx01/dsl2/subworkflows";
-    break;
-    case 'hg38':
-        modules_dir="/home/mmaj/LNX01_mmaj/scripts_lnx01/nextflow_lnx01/dsl2/modules";
-        subworkflow_dir="/home/mmaj/LNX01_mmaj/scripts_lnx01/nextflow_lnx01/dsl2/subworkflows";
-    break;
-}
-
-
-
-
-// Process to join CRAM and CRAI files
-process JoinCramCrai {
     input:
-    val meta
-    path cram
-    path crai
 
-    output:
-    tuple val(meta), path(cram), path(crai) into joinedCramCrai
+    tuple val(metaNormal), path(normalCram), path(normalCrai), val(metaTumor), path(tumorCram), path(tumorCrai)
 
+    // Add the script to run the Strelka workflow using the inputs
     script:
     """
-    echo "Joining ${cram} and ${crai}"
-    """
-}
-
-// Process for running Strelka workflow
-process RunStrelka {
-    input:
-    tuple val(meta), path(normal_cram), path(normal_index)
-    tuple val(meta), path(tumor_cram), path(tumor_index)
-
-    output:
-    path "${params.runDir}/*"
-
-    script:
-    """
-    singularity run -B ${s_bind} ${simgpath}/strelka2_2.9.10.sif /tools/strelka2/bin/configureStrelkaSomaticWorkflow.py \
-    --normalBam ${normal_cram} \
-    --tumorBam ${tumor_cram} \
-    --referenceFasta ${genome_fasta} \
+    singularity run -B /data/shared/programmer/simg/strelka2_2.9.10.sif /tools/strelka2/bin/configureStrelkaSomaticWorkflow.py \
+    --normalBam ${normalCram} \
+    --tumorBam ${tumorCram} \
+    --referenceFasta ${params.genome_fasta} \
     --exome \
-    --runDir ${params.runDir}
+    --runDir NF_Strelkatest_singularity
 
     singularity run -B /data/shared/programmer/simg/strelka2_2.9.10.sif python2 ${params.runDir}/runWorkflow.py -j 10 -m local
+
+    singularity run -B /data/shared/programmer/simg/strelka2_2.9.10.sif python2 NF_Strelkatest_singularity/runWorkflow.py \
+    -j 10 \
+    -m local
     """
 }
 
-// Main workflow
 workflow {
-    // Channel creation for CRAM and CRAI files
-    normalCramChannel = Channel.fromPath(params.normal_cram).map { tuple(it.baseName.tokenize('.').get(0), it) }
-    normalCraiChannel = Channel.fromPath(params.normal_Crai).map { tuple(it.baseName.tokenize('.').get(0), it) }
-    tumorCramChannel = Channel.fromPath(params.tumor_Cram).map { tuple(it.baseName.tokenize('.').get(0), it) }
-    tumorCraiChannel = Channel.fromPath(params.tumor_Crai).map { tuple(it.baseName.tokenize('.').get(0), it) }
+    
+    if (params.filesPath == '') {
+        println("No file path provided. Use --filesPath to specify the directory containing the files.")
+        return
+    }
 
-    // Joining CRAM and CRAI files
-    normalJoined = normalCramChannel.combine(normalCraiChannel)
-    tumorJoined = tumorCramChannel.combine(tumorCraiChannel)
+    // Create channels for CRAM and CRAI files, automatically filtering by 'NORMAL' and 'TUMOR' in the filenames
+    normalCram = Channel.fromPath("${params.filesPath}/*NORMAL*.cram")
+      .map{ file -> tuple(file.baseName.tokenize('.').get(0), file) }
+      //.view()
+    normalCrai = Channel.fromPath("${params.filesPath}/*NORMAL*.crai")
+      .map{ file -> tuple(file.baseName.tokenize('.').get(0), file) }
+      //.view()
+    tumorCram = Channel.fromPath("${params.filesPath}/*TUMOR*.cram")
+      .map{ file -> tuple(file.baseName.tokenize('.').get(0), file) }
+      //.view()
+    tumorCrai = Channel.fromPath("${params.filesPath}/*TUMOR*.crai")
+      .map{ file -> tuple(file.baseName.tokenize('.').get(0), file) }
+      //.view()
+   
+    normalJoined = normalCram.join(normalCrai, by: 0)//.view()
+    tumorJoined = tumorCram.join(tumorCrai, by: 0)//.view()
 
-    // Running Strelka workflow
-    RunStrelka(normalJoined, tumorJoined)
+    // Combine the channels into one
+    allJoined = normalJoined.join(tumorJoined, by: 0)//.view()
+
+
+
+    // Calling the Strelka2 process with the joined channels
+    strelka2_singularity(allJoined)
 }
+
+
